@@ -1,218 +1,184 @@
-#include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
+#include <sys/wait.h>
+#include <limits.h>
 
-//all global variables                                                                 
-#define BUFF 4069
-char buffer[BUFF];
+#define BUFF 4096
 
-
-//declares exit function                                                               
+/* builtins */
 int cmdexit(char **args);
 int cmdcd(char **args);
-void prompt1(void);
-void prompt2(void);
 
-//allows for exit input to be input from user to exit program                          
+/* builtin tables */
 char *built_str[] = {"exit", "cd"};
-int (*built_func[]) (char**) = {&cmdexit, &cmdcd};
+int (*built_func[])(char **) = {cmdexit, cmdcd};
 
-int built_nums() {
-  return sizeof(built_str) / sizeof(char*);
+int built_nums(void) {
+    return sizeof(built_str) / sizeof(char *);
 }
 
-int redir(char **args) {//function for redirection                                     
+/* ---------------- REDIRECTION ---------------- */
 
-  int in = 0, out = 0;
-  char input[BUFF], output[BUFF];
+void redir(char **args) {
+    for (int i = 0; args[i] != NULL; i++) {
 
-  for(int i = 0; i < strlen(*args); i++) {
-    if(strcmp(args[i], "<") == 0) {//checks if command is <                            
-      strcpy(input, args[i+1]);
-      args[i] = NULL;
-      in = 1;
+        /* input redirection */
+        if (strcmp(args[i], "<") == 0) {
+            int fd = open(args[i + 1], O_RDONLY);
+            if (fd < 0) {
+                perror("open");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+
+            /* remove < filename */
+            for (int j = i; args[j + 2] != NULL; j++)
+                args[j] = args[j + 2];
+            args[i] = NULL;
+            i--;
+        }
+
+        /* output redirection */
+        else if (strcmp(args[i], ">") == 0) {
+            int fd = creat(args[i + 1], 0644);
+            if (fd < 0) {
+                perror("creat");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+
+            /* remove > filename */
+            for (int j = i; args[j + 2] != NULL; j++)
+                args[j] = args[j + 2];
+            args[i] = NULL;
+            i--;
+        }
     }
-    if(strcmp(args[i], ">") == 0) { //checks if command is >                           
-      strcpy(output, args[i+1]);
-      args[i] = NULL;
-      out = 1;
-    }
-  }
-  if(in == 1) { //if command contains <                                                
-    int fd1 = open(input, O_RDONLY);
-    if(fd1 < 0) {
-      write(STDERR_FILENO, "ERROR\n", 6);
-      exit(0);
-    }
-    return dup2(fd1, STDIN_FILENO);
-  }
-  if(out == 1) { //if command contains >                                               
-    int fd2 = creat(output, BUFF);
-    if(fd2 < 0) {
-      write(STDERR_FILENO, "ERROR\n", 6);
-      exit(0);
-    }
-    return dup2(fd2, STDOUT_FILENO);
-  }
-  else return 1;
 }
 
-/*                                                                                     
-  @allows for program to start and ius passed to execute function                      
-  @to see what command is being input                                                  
-*/
+/* ---------------- EXECUTION ---------------- */
+
 int start(char **args) {
+    pid_t pid = fork();
+    int status;
 
-  pid_t pid, wpid;
-  int status;
-  int options = 0;// in = 0, out = 0;                                                  
-  //char input[BUFF], output[BUFF];                                                    
-
-  pid = fork();
-  if(pid == 0) { //child process                                                       
-    if(execvp(args[0], args) == -1) { //error message if forking doesn't work          
-      write(STDERR_FILENO, "ERROR\n", 6);
-    }
-
-    exit(EXIT_FAILURE);
-    redir(args);
-  } else if(pid < 0) { //error message if forking doesn't work                         
-    write(STDERR_FILENO, "ERROR\n", 6);
-  } else { //parent process                                                            
-    do {
-      wpid = waitpid(pid, &status, options);
-    } while(!WIFEXITED(status) && !WIFSIGNALED(status));
-  }
-
-  if(WIFSIGNALED(status)) {//prints program status                                     
-    int ts = WTERMSIG(status);
-    printf("child with pid %d exited abnormally due to signl = %d\n", wpid, ts);
-  }
-  return 1;
-}
-
-//function takes user input and returns command                                        
-char *read_line(void) {
-  char *line = NULL;
-  size_t size = 0;
-  ssize_t s_read = getline(&line, &size, stdin);
-
-  //getline checks if user input a command                                             
-  if(s_read < 0) {
-    exit(EXIT_SUCCESS);
-  }
-
-  return line;
-}
-
-#define TOK_D " \t\r\n\a<>"
-//function parses each input from read_line to make it readable for program            
-char **split(char *line) {
-  int pos = 0; int bsize = BUFF;
-  char **tokens = malloc(bsize * sizeof(char*));
-  char *token;
-
-  //if nothing to tokenize, error message appears                                      
-  if(!tokens) {
-    write(STDERR_FILENO, "ERROR\n", 6);
-    exit(EXIT_FAILURE);
-  }
-
-  //tokenizes users command                                                            
-  token = strtok(line, TOK_D);
-  while(token != NULL) {
-    tokens[pos] = token;
-    pos++;
-
-    if(pos >= bsize) {
-      bsize += BUFF;
-      tokens = realloc(tokens, bsize * sizeof(char*));
-      if(!tokens) {
-        write(STDERR_FILENO, "ERROR\n", 6);
+    if (pid == 0) {  /* child */
+        redir(args);
+        execvp(args[0], args);
+        perror("execvp");
         exit(EXIT_FAILURE);
-      }
     }
-    token = strtok(NULL, TOK_D);
-  }
-  tokens[pos] = NULL;
-  return tokens;
-}
-
-//allows for program to take user input and process commands                           
-int execute(char **args) {
-
-  //checks if there is no comand                                                       
-  if (args[0] == NULL) {
+    else if (pid < 0) {
+        perror("fork");
+    }
+    else {  /* parent */
+        waitpid(pid, &status, 0);
+    }
     return 1;
-  }
-
-  //allows for user command to be passed to start function                             
-  for(int i = 0; i < built_nums(); i++) {
-    if(strcmp(args[0], built_str[i]) == 0) {
-      return (*built_func[i])(args);
-    }
-  }
-  return start(args);
 }
 
-int cmdcd (char **args) { //command for changing directories                           
-  if(args[1] == NULL) {
-    write(STDIN_FILENO, "No such directory\n", 20);
-  } else {
-    if(chdir(args[1]) != 0) {
-      write(STDIN_FILENO, "ERROR\n", 7);
+/* ---------------- INPUT ---------------- */
+
+char *read_line(void) {
+    char *line = NULL;
+    size_t size = 0;
+
+    if (getline(&line, &size, stdin) < 0) {
+        free(line);
+        exit(EXIT_SUCCESS);
     }
-  }
-  return 1;
+    return line;
 }
 
-//exit command                                                                         
+#define TOK_D " \t\r\n\a"
+
+char **split(char *line) {
+    int pos = 0;
+    int size = BUFF;
+    char **tokens = malloc(size * sizeof(char *));
+    char *token;
+
+    if (!tokens) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    token = strtok(line, TOK_D);
+    while (token) {
+        tokens[pos++] = token;
+
+        if (pos >= size) {
+            size += BUFF;
+            tokens = realloc(tokens, size * sizeof(char *));
+            if (!tokens) {
+                perror("realloc");
+                exit(EXIT_FAILURE);
+            }
+        }
+        token = strtok(NULL, TOK_D);
+    }
+    tokens[pos] = NULL;
+    return tokens;
+}
+
+/* ---------------- COMMAND HANDLING ---------------- */
+
+int execute(char **args) {
+    if (args[0] == NULL)
+        return 1;
+
+    for (int i = 0; i < built_nums(); i++) {
+        if (strcmp(args[0], built_str[i]) == 0)
+            return (*built_func[i])(args);
+    }
+    return start(args);
+}
+
+/* ---------------- BUILTINS ---------------- */
+
+int cmdcd(char **args) {
+    if (args[1] == NULL) {
+        fprintf(stderr, "cd: missing operand\n");
+    } else if (chdir(args[1]) != 0) {
+        perror("cd");
+    }
+    return 1;
+}
+
 int cmdexit(char **args) {
-  return 0;
+    (void)args;
+    return 0;
 }
 
-void prompt1(void) { //prompt for home directory                                       
-  write(STDERR_FILENO, "1730sh:~$ ", 10);
+/* ---------------- PROMPT ---------------- */
+
+void prompt(void) {
+    char cwd[PATH_MAX];
+    getcwd(cwd, sizeof(cwd));
+    printf("1730sh:%s$ ", cwd);
 }
 
-void prompt2(void) { //prompt if directory is changed                                  
-  write(STDERR_FILENO, "1730sh:", 7);
-}
+/* ---------------- MAIN ---------------- */
 
-int main(int argc, char **argv) {
+int main(void) {
+    char *line;
+    char **args;
+    int status;
 
-  char *line;
-  char **args;
-  int status;
-  char hpath[BUFF];
-  char temppath[BUFF];
-  char newpath[BUFF];
+    do {
+        prompt();
+        line = read_line();
+        args = split(line);
+        status = execute(args);
 
-  //loops program to allow for multiple user inputs                                    
-  do {
-    //checks which prompt to show user                                                 
-    getcwd(hpath, sizeof(hpath));
-    strcpy(temppath, hpath);
-    getcwd(newpath, sizeof(newpath));
-    if(strcmp(temppath, newpath)) { //if in home directory ~$ is printed               
-      prompt1();
-    }
-    else { //if directory changed, file path is shown                                  
-      prompt2();
-      printf("%s$ ", newpath);
-    }
+        free(line);
+        free(args);
+    } while (status);
 
-    line = read_line();
-    args = split(line);
-    status = execute(args);
-
-    free(line);
-    free(args);
-  } while(status);
-
-  return EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }
